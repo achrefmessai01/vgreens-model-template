@@ -1,0 +1,12 @@
+# Per-model job config. The platform reads `thresholds` for the validation gate;
+# your train.py reads `train` for hyperparameters. Add whatever your model needs.
+train:
+  model: yolo11n.pt
+  epochs: 15
+  imgsz: 640
+  batch: 16
+
+thresholds:            # minimums (metric must be >=). Use thresholds_max for lower-is-better.
+  mAP50: 0.40
+# thresholds_max:
+#   inference_latency_ms: 50

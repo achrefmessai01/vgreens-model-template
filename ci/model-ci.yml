@@ -1,0 +1,64 @@
+# Reusable CI/CD pipeline for ANY vGreens model image.
+# A model repo uses it with a tiny .gitlab-ci.yml:
+#
+#   include:
+#     - project: 'achrefmessai/vgreens-model-template'
+#       ref: main
+#       file: '/ci/model-ci.yml'
+#   variables:
+#     MODEL_NAME: my_model
+#     DATASET_NAME: my_dataset
+#     DATASET_VERSION: v1
+#     CONFIG_PATH: /mnt/vgreens_storage/ai/job-configs/my_model.yaml
+#
+# Required CI/CD variables (set in the model project's settings):
+#   VGREENS_API_URL, VGREENS_API_TOKEN
+# The GPU host must be able to `docker pull` from the registry (one-time docker login).
+# CI never runs training or touches a GPU — it builds/ships the image and, on a manual
+# click, asks the Job API to enqueue a training that a GPU worker runs.
+
+stages: [lint, test, build, submit]
+
+variables:
+  IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+  DATASET_VERSION: "v1"
+
+lint:
+  stage: lint
+  image: python:3.12-slim
+  script:
+    - pip install --quiet ruff
+    - ruff check .
+  allow_failure: true
+
+test:
+  stage: test
+  image: python:3.12-slim
+  script:
+    - pip install --quiet pytest pillow pyyaml
+    - if [ -d tests ]; then pytest -q; else echo "no tests/ — skipping"; fi
+
+build_image:
+  stage: build
+  image: docker:27
+  services: [docker:27-dind]
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -t "$IMAGE" .
+    - docker push "$IMAGE"
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+# Manual gate: turn the just-built image into a real training run on the platform.
+submit_training:
+  stage: submit
+  image: curlimages/curl:latest
+  when: manual
+  script:
+    - |
+      curl -sf -X POST "$VGREENS_API_URL/jobs" \
+        -H "Authorization: Bearer $VGREENS_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "{\"job_type\":\"training\",\"model_name\":\"$MODEL_NAME\",\"dataset_name\":\"$DATASET_NAME\",\"dataset_version\":\"$DATASET_VERSION\",\"docker_image\":\"$IMAGE\",\"config_path\":\"$CONFIG_PATH\",\"git_commit\":\"$CI_COMMIT_SHA\"}"

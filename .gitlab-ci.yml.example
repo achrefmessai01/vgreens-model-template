@@ -1,0 +1,12 @@
+# Copy this to `.gitlab-ci.yml` in a new model repo. That's the whole pipeline —
+# it pulls the shared stages from the template and just sets a few variables.
+include:
+  - project: 'achrefmessai/vgreens-model-template'
+    ref: main
+    file: '/ci/model-ci.yml'
+
+variables:
+  MODEL_NAME: my_model
+  DATASET_NAME: my_dataset
+  DATASET_VERSION: v1
+  CONFIG_PATH: /mnt/vgreens_storage/ai/job-configs/my_model.yaml
