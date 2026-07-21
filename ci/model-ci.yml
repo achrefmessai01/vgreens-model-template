@@ -74,18 +74,19 @@ trivy_scan:
   rules:
     - if: '$CI_COMMIT_BRANCH'
 
-# Software bill of materials (CycloneDX).
+# Software bill of materials (CycloneDX). syft's own image is distroless (no shell),
+# so we install the binary into a slim image that GitLab can run a script in.
 sbom:
   stage: security
-  image:
-    name: anchore/syft:latest
-    entrypoint: [""]
+  image: python:3.12-slim
   needs: [build]
   variables:
     SYFT_REGISTRY_AUTH_AUTHORITY: "$CI_REGISTRY"
     SYFT_REGISTRY_AUTH_USERNAME: "$CI_REGISTRY_USER"
     SYFT_REGISTRY_AUTH_PASSWORD: "$CI_REGISTRY_PASSWORD"
   script:
+    - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
+    - curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
     - syft "$IMAGE" -o cyclonedx-json=sbom.json -o table
   artifacts:
     paths: [sbom.json]
