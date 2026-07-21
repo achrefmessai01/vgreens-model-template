@@ -1,23 +1,16 @@
-# Reusable CI/CD pipeline for ANY vGreens model image.
-# A model repo uses it with a tiny .gitlab-ci.yml:
+# Reusable CI/CD for vGreens model repos. Included by each model's .gitlab-ci.yml,
+# which sets MODEL_NAME / DATASET_NAME / DATASET_VERSION / CONFIG_PATH.
 #
-#   include:
-#     - project: 'achrefmessai/vgreens-model-template'
-#       ref: main
-#       file: '/ci/model-ci.yml'
-#   variables:
-#     MODEL_NAME: my_model
-#     DATASET_NAME: my_dataset
-#     DATASET_VERSION: v1
-#     CONFIG_PATH: /mnt/vgreens_storage/ai/job-configs/my_model.yaml
+# Runs on the self-hosted CPU runner (sv01). Builds with kaniko (NO privileged
+# Docker — safe on the shared host), scans with Trivy, produces a Syft SBOM, and
+# — on a manual click — submits training to the Job API. CI never touches a GPU.
 #
-# Required CI/CD variables (set in the model project's settings):
-#   VGREENS_API_URL, VGREENS_API_TOKEN
-# The GPU host must be able to `docker pull` from the registry (one-time docker login).
-# CI never runs training or touches a GPU — it builds/ships the image and, on a manual
-# click, asks the Job API to enqueue a training that a GPU worker runs.
+# Required project CI/CD variables:
+#   VGREENS_API_URL   e.g. http://172.16.20.89:8000  (reachable from sv01)
+#   VGREENS_CI_TOKEN  scoped API token, masked         (operator: submit jobs)
+# The GPU host needs a one-time `docker login registry.gitlab.com` to pull images.
 
-stages: [lint, test, build, submit]
+stages: [lint, test, build, security, submit]
 
 variables:
   IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
@@ -35,30 +28,85 @@ test:
   stage: test
   image: python:3.12-slim
   script:
-    - pip install --quiet pytest pillow pyyaml
+    - pip install --quiet pytest pyyaml
     - if [ -d tests ]; then pytest -q; else echo "no tests/ — skipping"; fi
 
-build_image:
+# Build + push the immutable image with kaniko (daemonless, unprivileged).
+build:
   stage: build
-  image: docker:27
-  services: [docker:27-dind]
-  variables:
-    DOCKER_TLS_CERTDIR: "/certs"
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
   script:
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-    - docker build -t "$IMAGE" .
-    - docker push "$IMAGE"
+    - mkdir -p /kaniko/.docker
+    - |
+      echo "{\"auths\":{\"$CI_REGISTRY\":{\"username\":\"$CI_REGISTRY_USER\",\"password\":\"$CI_REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+    - >-
+      /kaniko/executor
+      --context "$CI_PROJECT_DIR"
+      --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+      --destination "$IMAGE"
+      --digest-file image.digest
+  artifacts:
+    paths: [image.digest]
+    expire_in: 1 week
   rules:
     - if: '$CI_COMMIT_BRANCH'
 
-# Manual gate: turn the just-built image into a real training run on the platform.
+# Vulnerability scan — report always; fail only on CRITICAL (non-blocking for now).
+trivy_scan:
+  stage: security
+  image:
+    name: aquasec/trivy:latest
+    entrypoint: [""]
+  needs: [build]
+  variables:
+    TRIVY_USERNAME: "$CI_REGISTRY_USER"
+    TRIVY_PASSWORD: "$CI_REGISTRY_PASSWORD"
+  script:
+    - trivy image --severity HIGH,CRITICAL --format table "$IMAGE" | tee trivy-report.txt
+    - trivy image --severity CRITICAL --exit-code 1 "$IMAGE" || echo "CRITICAL findings — see trivy-report.txt"
+  artifacts:
+    paths: [trivy-report.txt]
+    when: always
+    expire_in: 1 month
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+# Software bill of materials (CycloneDX).
+sbom:
+  stage: security
+  image:
+    name: anchore/syft:latest
+    entrypoint: [""]
+  needs: [build]
+  variables:
+    SYFT_REGISTRY_AUTH_AUTHORITY: "$CI_REGISTRY"
+    SYFT_REGISTRY_AUTH_USERNAME: "$CI_REGISTRY_USER"
+    SYFT_REGISTRY_AUTH_PASSWORD: "$CI_REGISTRY_PASSWORD"
+  script:
+    - syft "$IMAGE" -o cyclonedx-json=sbom.json -o table
+  artifacts:
+    paths: [sbom.json]
+    when: always
+    expire_in: 1 month
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
+# Manual gate: enqueue training with the exact built image. The API queues it for
+# a GPU worker; CI does not run training itself.
 submit_training:
   stage: submit
   image: curlimages/curl:latest
   when: manual
+  needs: [build]
   script:
-    - |
-      curl -sf -X POST "$VGREENS_API_URL/jobs" \
-        -H "Authorization: Bearer $VGREENS_API_TOKEN" \
-        -H "Content-Type: application/json" \
-        -d "{\"job_type\":\"training\",\"model_name\":\"$MODEL_NAME\",\"dataset_name\":\"$DATASET_NAME\",\"dataset_version\":\"$DATASET_VERSION\",\"docker_image\":\"$IMAGE\",\"config_path\":\"$CONFIG_PATH\",\"git_commit\":\"$CI_COMMIT_SHA\"}"
+    - >-
+      curl -sf -X POST "$VGREENS_API_URL/jobs"
+      -H "Authorization: Bearer $VGREENS_CI_TOKEN"
+      -H "Content-Type: application/json"
+      -d "{\"job_type\":\"training\",\"model_name\":\"$MODEL_NAME\",\"dataset_name\":\"$DATASET_NAME\",\"dataset_version\":\"$DATASET_VERSION\",\"docker_image\":\"$IMAGE\",\"config_path\":\"$CONFIG_PATH\"}"
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
