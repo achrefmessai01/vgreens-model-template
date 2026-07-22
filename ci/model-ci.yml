@@ -12,6 +12,13 @@
 
 stages: [lint, test, build, security, submit]
 
+# Every job runs on the self-hosted sv01 group runner (tag: sv01). This keeps all
+# work — especially submit_training, which must reach the LAN Job API — off
+# GitLab's shared cloud runners. Applies to every model repo that includes this
+# template, so no per-project runner settings are needed.
+default:
+  tags: [vgreens-sv01-cpu]
+
 variables:
   IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
   DATASET_VERSION: "v1"
