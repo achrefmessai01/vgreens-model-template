@@ -104,8 +104,10 @@ submit_training:
   when: manual
   needs: [build]
   script:
+    - 'echo "target API: ${VGREENS_API_URL:-<EMPTY>}"'
+    - '[ -n "$VGREENS_API_URL" ] || { echo "VGREENS_API_URL is not set — check CI/CD variables (Protect flag off)"; exit 1; }'
     - >-
-      curl -sf -X POST "$VGREENS_API_URL/jobs"
+      curl -fsS -X POST "$VGREENS_API_URL/jobs"
       -H "Authorization: Bearer $VGREENS_CI_TOKEN"
       -H "Content-Type: application/json"
       -d "{\"job_type\":\"training\",\"model_name\":\"$MODEL_NAME\",\"dataset_name\":\"$DATASET_NAME\",\"dataset_version\":\"$DATASET_VERSION\",\"docker_image\":\"$IMAGE\",\"config_path\":\"$CONFIG_PATH\"}"
