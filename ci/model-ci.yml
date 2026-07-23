@@ -103,20 +103,46 @@ sbom:
   rules:
     - if: '$CI_COMMIT_BRANCH'
 
-# Manual gate: enqueue training with the exact built image. The API queues it for
-# a GPU worker; CI does not run training itself.
+# Manual gate: publish the job-config to the platform, then enqueue training with
+# the exact built image. The API queues it for a GPU worker; CI never trains.
+# Done in Python (stdlib urllib) so we can JSON-encode the YAML config safely —
+# no jq/escaping gymnastics. Fails loudly on any non-2xx response.
 submit_training:
   stage: submit
-  image: curlimages/curl:latest
+  image: python:3.12-slim
   when: manual
   needs: [build]
   script:
-    - 'echo "target API: ${VGREENS_API_URL:-<EMPTY>}"'
-    - '[ -n "$VGREENS_API_URL" ] || { echo "VGREENS_API_URL is not set — check CI/CD variables (Protect flag off)"; exit 1; }'
-    - >-
-      curl -fsS -X POST "$VGREENS_API_URL/jobs"
-      -H "Authorization: Bearer $VGREENS_CI_TOKEN"
-      -H "Content-Type: application/json"
-      -d "{\"job_type\":\"training\",\"model_name\":\"$MODEL_NAME\",\"dataset_name\":\"$DATASET_NAME\",\"dataset_version\":\"$DATASET_VERSION\",\"docker_image\":\"$IMAGE\",\"config_path\":\"$CONFIG_PATH\"}"
+    - |
+      python3 - <<'PY'
+      import json, os, sys, urllib.request, urllib.error
+
+      api = (os.environ.get("VGREENS_API_URL") or "").rstrip("/")
+      tok = os.environ.get("VGREENS_CI_TOKEN")
+      model = os.environ["MODEL_NAME"]
+      if not api or not tok:
+          sys.exit("VGREENS_API_URL / VGREENS_CI_TOKEN not set (check masked CI/CD variables)")
+
+      def post(path, payload):
+          req = urllib.request.Request(
+              api + path, data=json.dumps(payload).encode(), method="POST",
+              headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req) as r:
+                  print(f"{path} -> {r.status} {r.read().decode()[:200]}")
+          except urllib.error.HTTPError as e:
+              sys.exit(f"{path} -> {e.code} {e.read().decode()[:300]}")
+
+      # 1. publish the job-config (hyperparameters + promotion thresholds) to the NAS
+      with open(f"configs/{model}.yaml") as fh:
+          post(f"/model-configs/{model}", {"content": fh.read()})
+      # 2. enqueue training with the exact image CI just built
+      post("/jobs", {
+          "job_type": "training", "model_name": model,
+          "dataset_name": os.environ["DATASET_NAME"],
+          "dataset_version": os.environ.get("DATASET_VERSION", "v1"),
+          "docker_image": os.environ["IMAGE"], "config_path": os.environ["CONFIG_PATH"],
+      })
+      PY
   rules:
     - if: '$CI_COMMIT_BRANCH'
