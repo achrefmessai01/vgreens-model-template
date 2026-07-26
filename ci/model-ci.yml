@@ -22,6 +22,10 @@ default:
 variables:
   IMAGE: "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
   DATASET_VERSION: "v1"
+  # Kaniko layer cache lives in a sibling repo in the same registry. The heavy
+  # base + pip layers are built and pushed ONCE; later builds reuse them by
+  # digest, so only the tiny code layer changes (build drops to ~1-2 min).
+  CACHE_REPO: "$CI_REGISTRY_IMAGE/cache"
 
 lint:
   stage: lint
@@ -54,6 +58,13 @@ build:
       --dockerfile "$CI_PROJECT_DIR/Dockerfile"
       --destination "$IMAGE"
       --digest-file image.digest
+      --cache=true
+      --cache-repo "$CACHE_REPO"
+      --cache-copy-layers=true
+      --cache-ttl=336h
+      --snapshot-mode=redo
+      --use-new-run
+      --compressed-caching=false
   artifacts:
     paths: [image.digest]
     expire_in: 1 week
