@@ -59,7 +59,11 @@ build:
         echo "build -> LAN registry $LAN_REGISTRY"
         export IMAGE="$LAN_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA"
         export CACHE_REPO="$LAN_REGISTRY/$CI_PROJECT_PATH/cache"
-        printf '%s\n' "$VGREENS_REGISTRY_CA" >> /kaniko/ssl/certs/additional-ca-cert-bundle.crt
+        # VGREENS_REGISTRY_CA may be a File-type var (a path) or a plain var (the
+        # PEM text). Trust the CA either way by appending the cert to kaniko's
+        # bundle AND the system bundle.
+        if [ -f "$VGREENS_REGISTRY_CA" ]; then CA_PEM="$(cat "$VGREENS_REGISTRY_CA")"; else CA_PEM="$VGREENS_REGISTRY_CA"; fi
+        printf '%s\n' "$CA_PEM" | tee -a /kaniko/ssl/certs/additional-ca-cert-bundle.crt >> /kaniko/ssl/certs/ca-certificates.crt
         AUTH="$(printf '%s' "$VGREENS_REGISTRY_USER:$VGREENS_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
         printf '{"auths":{"%s":{"auth":"%s"}}}' "$LAN_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
       else
