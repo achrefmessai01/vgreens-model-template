@@ -53,20 +53,21 @@ build:
     # to the private LAN registry over the internal CA; otherwise keep gitlab.com.
     # The block is a no-op unless LAN_REGISTRY is defined, so it never changes the
     # default pipeline.
-    - mkdir -p /kaniko/.docker /kaniko/ssl/certs
+    - mkdir -p /kaniko/.docker
     - |
       if [ -n "$LAN_REGISTRY" ]; then
         echo "build -> LAN registry $LAN_REGISTRY"
         export IMAGE="$LAN_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA"
         export CACHE_REPO="$LAN_REGISTRY/$CI_PROJECT_PATH/cache"
-        # VGREENS_REGISTRY_CA may be a File-type var (a path) or a plain var (the
-        # PEM text). Trust the CA either way by appending the cert to kaniko's
-        # bundle AND the system bundle.
-        if [ -f "$VGREENS_REGISTRY_CA" ]; then CA_PEM="$(cat "$VGREENS_REGISTRY_CA")"; else CA_PEM="$VGREENS_REGISTRY_CA"; fi
-        printf '%s\n' "$CA_PEM" | tee -a /kaniko/ssl/certs/additional-ca-cert-bundle.crt >> /kaniko/ssl/certs/ca-certificates.crt
+        # Internal registry over the VPN/LAN with auth. Connection stays TLS; we
+        # skip chain verification for this one host (kaniko's cert-bundle trust
+        # doesn't apply when we override the entrypoint). The worker still verifies
+        # the CA on pull via /etc/docker/certs.d.
+        export KANIKO_EXTRA_ARGS="--skip-tls-verify-registry=$LAN_REGISTRY"
         AUTH="$(printf '%s' "$VGREENS_REGISTRY_USER:$VGREENS_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
         printf '{"auths":{"%s":{"auth":"%s"}}}' "$LAN_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
       else
+        export KANIKO_EXTRA_ARGS=""
         AUTH="$(printf '%s' "$CI_REGISTRY_USER:$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
         printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
       fi
@@ -76,6 +77,7 @@ build:
       --dockerfile "$CI_PROJECT_DIR/Dockerfile"
       --destination "$IMAGE"
       --digest-file image.digest
+      $KANIKO_EXTRA_ARGS
       --cache=true
       --cache-repo "$CACHE_REPO"
       --cache-copy-layers=true
