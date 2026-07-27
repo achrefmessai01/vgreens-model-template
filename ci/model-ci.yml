@@ -49,9 +49,23 @@ build:
     name: gcr.io/kaniko-project/executor:debug
     entrypoint: [""]
   script:
-    - mkdir -p /kaniko/.docker
+    # Registry selection (opt-in): if the group variable LAN_REGISTRY is set, push
+    # to the private LAN registry over the internal CA; otherwise keep gitlab.com.
+    # The block is a no-op unless LAN_REGISTRY is defined, so it never changes the
+    # default pipeline.
+    - mkdir -p /kaniko/.docker /kaniko/ssl/certs
     - |
-      echo "{\"auths\":{\"$CI_REGISTRY\":{\"username\":\"$CI_REGISTRY_USER\",\"password\":\"$CI_REGISTRY_PASSWORD\"}}}" > /kaniko/.docker/config.json
+      if [ -n "$LAN_REGISTRY" ]; then
+        echo "build -> LAN registry $LAN_REGISTRY"
+        export IMAGE="$LAN_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA"
+        export CACHE_REPO="$LAN_REGISTRY/$CI_PROJECT_PATH/cache"
+        printf '%s\n' "$VGREENS_REGISTRY_CA" >> /kaniko/ssl/certs/additional-ca-cert-bundle.crt
+        AUTH="$(printf '%s' "$VGREENS_REGISTRY_USER:$VGREENS_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
+        printf '{"auths":{"%s":{"auth":"%s"}}}' "$LAN_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
+      else
+        AUTH="$(printf '%s' "$CI_REGISTRY_USER:$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')"
+        printf '{"auths":{"%s":{"auth":"%s"}}}' "$CI_REGISTRY" "$AUTH" > /kaniko/.docker/config.json
+      fi
     - >-
       /kaniko/executor
       --context "$CI_PROJECT_DIR"
@@ -124,6 +138,11 @@ submit_training:
   when: manual
   needs: [build]
   script:
+    # keep IMAGE in sync with the build job when the LAN registry is in use
+    - |
+      if [ -n "$LAN_REGISTRY" ]; then
+        export IMAGE="$LAN_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA"
+      fi
     - |
       python3 - <<'PY'
       import json, os, sys, urllib.request, urllib.error
