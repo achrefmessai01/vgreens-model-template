@@ -102,6 +102,12 @@ trivy_scan:
     TRIVY_USERNAME: "$CI_REGISTRY_USER"
     TRIVY_PASSWORD: "$CI_REGISTRY_PASSWORD"
   script:
+    # scan the image where it actually was pushed (LAN registry when enabled)
+    - |
+      if [ -n "$LAN_REGISTRY" ]; then
+        export IMAGE="$LAN_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA"
+        export TRIVY_USERNAME="$VGREENS_REGISTRY_USER" TRIVY_PASSWORD="$VGREENS_REGISTRY_PASSWORD" TRIVY_INSECURE=true
+      fi
     - trivy image --severity HIGH,CRITICAL --format table "$IMAGE" | tee trivy-report.txt
     - trivy image --severity CRITICAL --exit-code 1 "$IMAGE" || echo "CRITICAL findings — see trivy-report.txt"
   artifacts:
@@ -123,6 +129,11 @@ sbom:
     SYFT_REGISTRY_AUTH_USERNAME: "$CI_REGISTRY_USER"
     SYFT_REGISTRY_AUTH_PASSWORD: "$CI_REGISTRY_PASSWORD"
   script:
+    - |
+      if [ -n "$LAN_REGISTRY" ]; then
+        export IMAGE="$LAN_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA"
+        export SYFT_REGISTRY_AUTH_AUTHORITY="$LAN_REGISTRY" SYFT_REGISTRY_AUTH_USERNAME="$VGREENS_REGISTRY_USER" SYFT_REGISTRY_AUTH_PASSWORD="$VGREENS_REGISTRY_PASSWORD" SYFT_REGISTRY_INSECURE_SKIP_TLS_VERIFY=true
+      fi
     - apt-get update && apt-get install -y --no-install-recommends curl ca-certificates
     - curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
     - syft "$IMAGE" -o cyclonedx-json=sbom.json -o table
