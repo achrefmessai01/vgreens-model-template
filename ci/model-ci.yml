@@ -91,6 +91,44 @@ build:
   rules:
     - if: '$CI_COMMIT_BRANCH'
 
+# Record the image CI just built as the model's "latest build" on the platform.
+# This is what makes 'auto/latest' on the Submit form resolve to the newest
+# registry image (even before the model has a trained version). Runs after build.
+record_image:
+  stage: security
+  image: python:3.12-slim
+  needs: [build]
+  script:
+    # keep IMAGE in sync with the build job when the LAN registry is in use
+    - |
+      if [ -n "$LAN_REGISTRY" ]; then
+        export IMAGE="$LAN_REGISTRY/$CI_PROJECT_PATH:$CI_COMMIT_SHORT_SHA"
+      fi
+    - |
+      python3 - <<'PY'
+      import json, os, sys, urllib.request, urllib.error
+      api = (os.environ.get("VGREENS_API_URL") or "").rstrip("/")
+      tok = os.environ.get("VGREENS_CI_TOKEN")
+      model = os.environ["MODEL_NAME"]
+      if not api or not tok:
+          print("VGREENS_API_URL / VGREENS_CI_TOKEN not set — skipping latest-image record")
+          sys.exit(0)   # advisory: never fail the pipeline over this
+      req = urllib.request.Request(
+          f"{api}/models/{model}/latest-image",
+          data=json.dumps({"docker_image": os.environ["IMAGE"],
+                           "commit": os.environ.get("CI_COMMIT_SHORT_SHA")}).encode(),
+          method="POST",
+          headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"})
+      try:
+          with urllib.request.urlopen(req) as r:
+              print(f"recorded latest image -> {r.status} {r.read().decode()[:200]}")
+      except urllib.error.HTTPError as e:
+          print(f"latest-image record failed (non-fatal): {e.code} {e.read().decode()[:200]}")
+      PY
+  allow_failure: true
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+
 # Vulnerability scan — report always; fail only on CRITICAL (non-blocking for now).
 trivy_scan:
   stage: security
